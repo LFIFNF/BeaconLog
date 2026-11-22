@@ -9,6 +9,7 @@
     <Grid DataContext="{x:Static local:StatusBallAppearance.Current}">
         <Grid.ContextMenu>
             <ContextMenu>
+                <MenuItem Header="重置计时" Click="ResetTimer_Click" />
                 <MenuItem Header="关闭悬浮窗" Click="CloseFloatingWindow_Click" />
             </ContextMenu>
         </Grid.ContextMenu>

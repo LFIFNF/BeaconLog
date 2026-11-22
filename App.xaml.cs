@@ -12,6 +12,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using Forms = System.Windows.Forms;
 
 namespace BeaconLog;
@@ -32,6 +33,8 @@ public partial class App : Application
     private DateTimeOffset startedAt = DateTimeOffset.UtcNow;
     private IReadOnlyList<StatusBallColorRule> colorRules = [];
     private DispatcherTimer? timelineTimer;
+    private readonly SleepIntervalDetector sleepDetector = new();
+    private bool watchingPower;
     private DateTimeOffset lastTimelineTick;
     private long lastReminderMinute;
     private (long Start, long End)? pendingReminder;
@@ -107,8 +110,25 @@ public partial class App : Application
         }
 
         ReloadColorTimeline();
+        sleepDetector.Rebase(SleepClockSample.Read());
+        try
+        {
+            SystemEvents.PowerModeChanged += PowerModeChanged;
+            watchingPower = true;
+        }
+        catch (InvalidOperationException error)
+        {
+            Trace.TraceWarning("Power notifications unavailable: {0}", error.Message);
+        }
         timelineTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-        timelineTimer.Tick += (_, _) => UpdateColorTimeline(DateTimeOffset.UtcNow);
+        timelineTimer.Tick += (_, _) =>
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (!CheckSleep(now, SleepClockSample.Read()))
+            {
+                UpdateColorTimeline(now);
+            }
+        };
         timelineTimer.Start();
         backupTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
         backupTimer.Tick += async (_, _) => await CheckAutomaticBackupAsync();
@@ -232,6 +252,7 @@ public partial class App : Application
     private async Task<string?> AddJournalEntryAsync(string text, JournalCategory category)
     {
         var now = DateTimeOffset.Now;
+        var previousStart = startedAt;
         var elapsed = ElapsedMinutes(now);
         var appearance = StatusBallAppearance.Current;
         var color = StatusBallTimeline.Resolve(appearance.ColorHex, colorRules, elapsed);
@@ -252,9 +273,10 @@ public partial class App : Application
         }
 
         ClearDraft();
-        startedAt = now;
-        ResetReminderState(now);
-        UpdateColorTimeline(now);
+        if (startedAt == previousStart)
+        {
+            ResetTiming(now);
+        }
         PublishJournal(data);
         return null;
     }
@@ -394,6 +416,43 @@ public partial class App : Application
         var now = DateTimeOffset.UtcNow;
         ResetReminderState(now);
         UpdateColorTimeline(now);
+    }
+
+    internal void ConfirmTimerReset(Window owner)
+    {
+        if (MessageBox.Show(owner, "是否重置计时？", "重置计时",
+            MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) == MessageBoxResult.Yes)
+        {
+            ResetTiming(DateTimeOffset.UtcNow);
+        }
+    }
+
+    internal void ResetTiming(DateTimeOffset now)
+    {
+        sleepDetector.Rebase(SleepClockSample.Read());
+        startedAt = now;
+        ResetReminderState(now);
+        UpdateColorTimeline(now);
+    }
+
+    private void PowerModeChanged(object sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Resume)
+        {
+            var sample = SleepClockSample.Read();
+            _ = Dispatcher.InvokeAsync(() => CheckSleep(DateTimeOffset.UtcNow, sample));
+        }
+    }
+
+    private bool CheckSleep(DateTimeOffset now, SleepClockSample? sample)
+    {
+        if (exiting || !sleepDetector.Observe(sample))
+        {
+            return false;
+        }
+
+        ResetTiming(now);
+        return true;
     }
 
     private void ResetReminderState(DateTimeOffset now)
@@ -572,6 +631,10 @@ public partial class App : Application
     {
         fullscreenTimer?.Stop();
         timelineTimer?.Stop();
+        if (watchingPower)
+        {
+            SystemEvents.PowerModeChanged -= PowerModeChanged;
+        }
         backupTimer?.Stop();
         ClearDraft();
         trayIcon?.Dispose();

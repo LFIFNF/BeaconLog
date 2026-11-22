@@ -173,4 +173,7 @@ public partial class FloatingStatusWindow : Window
     {
         Close();
     }
+
+    private void ResetTimer_Click(object sender, RoutedEventArgs e) =>
+        ((App)Application.Current).ConfirmTimerReset(this);
 }

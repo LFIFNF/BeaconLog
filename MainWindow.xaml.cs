@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Threading;
 
 namespace BeaconLog;
 
@@ -15,10 +17,23 @@ public partial class MainWindow : Window
     private DateOnly today = DateOnly.FromDateTime(DateTime.Now);
     private ILookup<DateOnly, JournalEntry> journalByDate = Array.Empty<JournalEntry>().ToLookup(entry => entry.RecordedDate);
     private JournalCalendarWindow? journalCalendar;
+    private readonly TimerResetPress resetPress = new();
+    private readonly DispatcherTimer resetHoldTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
+    private long resetPressStarted;
 
     public MainWindow()
     {
         InitializeComponent();
+        resetHoldTimer.Tick += (_, _) =>
+        {
+            if (Mouse.LeftButton != MouseButtonState.Pressed || !ResetTimerButton.IsMouseOver)
+            {
+                CancelResetPress();
+                return;
+            }
+
+            AdvanceResetPress();
+        };
         LocationChanged += (_, _) => ripple?.CenterOnBall();
         SizeChanged += (_, _) => ripple?.CenterOnBall();
         StateChanged += (_, _) =>
@@ -33,6 +48,7 @@ public partial class MainWindow : Window
         {
             if (!IsVisible)
             {
+                CancelResetPress();
                 ripple?.Close();
             }
             else if (scrollJournalWhenVisible)
@@ -41,6 +57,61 @@ public partial class MainWindow : Window
             }
         };
     }
+
+    private void ResetTimer_Press(object sender, MouseButtonEventArgs e)
+    {
+        resetPress.Begin();
+        resetPressStarted = Stopwatch.GetTimestamp();
+        ResetTimerProgress.Value = 0;
+        ResetTimerProgress.Visibility = Visibility.Visible;
+        resetHoldTimer.Start();
+    }
+
+    private void ResetTimer_Release(object sender, MouseButtonEventArgs e)
+    {
+        if (ResetTimerButton.IsMouseOver)
+        {
+            AdvanceResetPress();
+        }
+        else
+        {
+            CancelResetPress();
+        }
+
+        if (resetPress.End())
+        {
+            e.Handled = true;
+            ResetTimerButton.ReleaseMouseCapture();
+        }
+        resetHoldTimer.Stop();
+        ResetTimerProgress.Visibility = Visibility.Hidden;
+    }
+
+    private void ResetTimer_Cancel(object sender, MouseEventArgs e) => CancelResetPress();
+
+    private void CancelResetPress()
+    {
+        resetPress.Cancel();
+        resetHoldTimer.Stop();
+        ResetTimerProgress.Visibility = Visibility.Hidden;
+    }
+
+    private void AdvanceResetPress()
+    {
+        if (!resetPress.Active)
+        {
+            return;
+        }
+        if (resetPress.Advance(Stopwatch.GetElapsedTime(resetPressStarted)))
+        {
+            resetHoldTimer.Stop();
+            ((App)Application.Current).ResetTiming(DateTimeOffset.UtcNow);
+        }
+        ResetTimerProgress.Value = resetPress.Progress;
+    }
+
+    private void ResetTimer_Click(object sender, RoutedEventArgs e) =>
+        ((App)Application.Current).ConfirmTimerReset(this);
 
     internal void ShowJournal(IReadOnlyList<JournalEntry> entries, JournalEntry? edited = null)
     {

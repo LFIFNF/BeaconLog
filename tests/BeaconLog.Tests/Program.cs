@@ -29,12 +29,13 @@ internal static class Program
             }
             TestRecords(root);
             TestBackups(root);
+            TestTimerReset();
             LayoutChecks.Run();
             if (args.Contains("--benchmark", StringComparer.Ordinal))
             {
                 BenchmarkRecords(root);
             }
-            Console.WriteLine("PASS: records, backup scopes, rollback, interrupted recovery, automatic retention, journal layout");
+            Console.WriteLine("PASS: records, backups, timer reset, sleep thresholds, journal layout");
             return 0;
         }
         catch (Exception error)
@@ -206,6 +207,46 @@ internal static class Program
             var update = MedianMilliseconds(() => store.Edit(first, first.Text + ".", JournalCategory.Ordinary));
             Console.WriteLine($"{count,6} records | load {load,7:F2} ms | date index {indexTime,7:F2} ms | edit {update,7:F2} ms");
         }
+    }
+
+    private static void TestTimerReset()
+    {
+        static SleepClockSample Sample(long elapsed, long awake) =>
+            new((ulong)elapsed * (ulong)TimeSpan.TicksPerSecond, (ulong)awake * (ulong)TimeSpan.TicksPerSecond);
+
+        Equal(true, SleepClockSample.Read().HasValue, "native Windows sleep counters");
+        foreach (var seconds in new[] { 3599, 3600, 3601 })
+        {
+            var detector = new SleepIntervalDetector();
+            Equal(false, detector.Observe(Sample(120, 100)), "first sample only establishes baseline");
+            var after = Sample(120 + seconds + 7, 107);
+            Equal(seconds > 3600, detector.Observe(after), "sleep threshold must be strictly greater");
+            Equal(false, detector.Observe(Sample(120, 100)), "delayed sample ignored");
+            Equal(false, detector.Observe(after), "fallback and recovery must not repeat reset");
+        }
+
+        var awakeOnly = new SleepIntervalDetector();
+        awakeOnly.Rebase(Sample(100, 90));
+        Equal(false, awakeOnly.Observe(Sample(7_300, 7_290)), "awake application stalls do not count as sleep");
+        Equal(false, awakeOnly.Observe(null), "unavailable sample does not trigger");
+        awakeOnly.Rebase(Sample(11_401, 7_291));
+        Equal(false, awakeOnly.Observe(Sample(11_402, 7_292)), "manual reset rebases sleep tracking");
+
+        var press = new TimerResetPress();
+        press.Begin();
+        Equal(false, press.Advance(TimeSpan.FromMilliseconds(499)), "short press threshold");
+        Equal(true, press.Progress > 0 && press.Progress < 1, "visual progress before threshold");
+        Equal(false, press.End(), "short press allows confirmation");
+        press.Begin();
+        Equal(true, press.Advance(TimeSpan.FromMilliseconds(500)), "long press threshold");
+        Equal(1d, press.Progress, "visual progress at threshold");
+        Equal(false, press.Advance(TimeSpan.FromSeconds(2)), "long press resets only once");
+        Equal(true, press.End(), "long press consumes click");
+        press.Begin();
+        press.Cancel();
+        Equal(0d, press.Progress, "cancel clears progress");
+        Equal(false, press.Advance(TimeSpan.FromSeconds(2)), "cancelled press cannot reset");
+        Equal(true, press.End(), "cancelled press consumes click");
     }
 
     private static double MedianMilliseconds(Action operation)
