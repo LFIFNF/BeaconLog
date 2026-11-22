@@ -9,6 +9,7 @@ using System.Security;
 using System.Security.Principal;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
 using Forms = System.Windows.Forms;
@@ -38,6 +39,8 @@ public partial class App : Application
     private readonly JournalStore journal = JournalStore.ForCurrentUser();
     private BackupService? backups;
     private DispatcherTimer? backupTimer;
+    private readonly SemaphoreSlim storageGate = new(1);
+    private bool checkingBackup;
     internal BackupService Backups => backups ??= new BackupService(journal, Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BeaconLog", "Backups"));
     internal IReadOnlyList<JournalCategory> JournalCategories { get; private set; } = [JournalCategory.Ordinary];
@@ -75,6 +78,20 @@ public partial class App : Application
             return;
         }
 
+        try
+        {
+            if (Backups.RecoverInterruptedRestore() is { } settings)
+            {
+                StatusBallAppearance.Current.ApplyRestoredAppearance(settings.Diameter, settings.ColorHex, settings.InitialTitle);
+            }
+        }
+        catch (Exception error) when (BackupService.IsDataError(error))
+        {
+            MessageBox.Show($"未能回滚上次中断的恢复。\n{error.Message}", "BeaconLog",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown(1);
+            return;
+        }
         StartupSettings.UpgradeLoginRegistration();
         hideWhenFullscreen = StartupSettings.HideWhenFullscreen;
         var window = new MainWindow();
@@ -94,15 +111,17 @@ public partial class App : Application
         timelineTimer.Tick += (_, _) => UpdateColorTimeline(DateTimeOffset.UtcNow);
         timelineTimer.Start();
         backupTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
-        backupTimer.Tick += (_, _) => CheckAutomaticBackup();
+        backupTimer.Tick += async (_, _) => await CheckAutomaticBackupAsync();
         backupTimer.Start();
-        Dispatcher.BeginInvoke(DispatcherPriority.Background, CheckAutomaticBackup);
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(async () => await CheckAutomaticBackupAsync()));
 
         trayMenu = new Forms.ContextMenuStrip();
         trayMenu.Items.Add("打开主窗口", null, (_, _) => ShowMainWindow());
-        trayMenu.Items.Add("退出", null, (_, _) =>
+        trayMenu.Items.Add("退出", null, async (_, _) =>
         {
             exiting = true;
+            await storageGate.WaitAsync();
+            storageGate.Release();
             Shutdown();
         });
         using (var iconStream = GetResourceStream(new Uri("/BeaconLog;component/Assets/BeaconLog.ico", UriKind.Relative)).Stream)
@@ -143,24 +162,34 @@ public partial class App : Application
 
     internal void ShowBallInput(FrameworkElement ball)
     {
+        if (inputWindow is { IsSaving: true } busy)
+        {
+            busy.Activate();
+            return;
+        }
         inputWindow?.Close();
         var draft = Stopwatch.GetElapsedTime(draftSavedAt) < DraftLifetime ? journalDraft : null;
         ClearDraft();
         var selected = draft is { } saved
             ? JournalCategories.FirstOrDefault(category => category.Id == saved.Category.Id) ?? JournalCategory.Ordinary
             : JournalCategory.Ordinary;
-        OpenJournalInput(ball, draft?.Text ?? "", selected, AddJournalEntry, isEdit: false);
+        OpenJournalInput(ball, draft?.Text ?? "", selected, AddJournalEntryAsync, isEdit: false);
     }
 
     internal StatusBallInputWindow ShowJournalEditor(FrameworkElement row, JournalEntry entry)
     {
+        if (inputWindow is { IsSaving: true } busy)
+        {
+            busy.Activate();
+            return busy;
+        }
         inputWindow?.Close();
         return OpenJournalInput(row, entry.Text, entry.RecordCategory,
-            (text, category) => EditJournalEntry(entry, text, category), isEdit: true);
+            (text, category) => EditJournalEntryAsync(entry, text, category), isEdit: true);
     }
 
     private StatusBallInputWindow OpenJournalInput(FrameworkElement anchor, string text, JournalCategory selected,
-        Func<string, JournalCategory, string?> save, bool isEdit)
+        Func<string, JournalCategory, Task<string?>> save, bool isEdit)
     {
         var input = new StatusBallInputWindow(anchor, text, JournalCategories, selected, save, isEdit);
         inputWindow = input;
@@ -200,7 +229,7 @@ public partial class App : Application
         journalDraft = null;
     }
 
-    private string? AddJournalEntry(string text, JournalCategory category)
+    private async Task<string?> AddJournalEntryAsync(string text, JournalCategory category)
     {
         var now = DateTimeOffset.Now;
         var elapsed = ElapsedMinutes(now);
@@ -211,7 +240,7 @@ public partial class App : Application
         JournalData data;
         try
         {
-            data = journal.Add(entry);
+            data = await RunJournalWriteAsync(() => journal.Add(entry));
         }
         catch (InvalidOperationException error)
         {
@@ -230,12 +259,12 @@ public partial class App : Application
         return null;
     }
 
-    private string? EditJournalEntry(JournalEntry original, string text, JournalCategory category)
+    private async Task<string?> EditJournalEntryAsync(JournalEntry original, string text, JournalCategory category)
     {
         JournalData data;
         try
         {
-            data = journal.Edit(original, text, category);
+            data = await RunJournalWriteAsync(() => journal.Edit(original, text, category));
         }
         catch (InvalidOperationException error)
         {
@@ -246,18 +275,21 @@ public partial class App : Application
             return "未能保存修改，请重试。";
         }
 
-        var main = (MainWindow)MainWindow;
-        // Close the editor before replacing the row that owns its anchor.
-        main.Dispatcher.BeginInvoke(DispatcherPriority.Normal,
-            () => PublishJournal(data, data.Entries.First(entry => entry.Id == original.Id)));
+        PublishJournal(data, data.Entries.First(entry => entry.Id == original.Id));
         return null;
     }
 
-    internal string? ChangeJournalCategories(Func<JournalStore, JournalData> change)
+    internal Task<string?> DeleteJournalEntryAsync(Guid id) =>
+        ChangeJournalAsync(store => store.Delete(id), "未能删除记录，请重试。");
+
+    internal Task<string?> ChangeJournalCategoriesAsync(Func<JournalStore, JournalData> change) =>
+        ChangeJournalAsync(change, "未能保存分类，请重试。");
+
+    private async Task<string?> ChangeJournalAsync(Func<JournalStore, JournalData> change, string failure)
     {
         try
         {
-            PublishJournal(change(journal));
+            PublishJournal(await RunJournalWriteAsync(() => change(journal)));
             return null;
         }
         catch (InvalidOperationException error)
@@ -266,7 +298,7 @@ public partial class App : Application
         }
         catch (Exception error) when (IsJournalStorageError(error))
         {
-            return "未能保存分类，请重试。";
+            return failure;
         }
     }
 
@@ -276,14 +308,22 @@ public partial class App : Application
         ((MainWindow)MainWindow).ShowJournal(data.Entries, edited);
     }
 
-    internal void CheckAutomaticBackup()
+    internal async Task CheckAutomaticBackupAsync()
     {
-        if (exiting)
+        if (exiting || checkingBackup)
         {
             return;
         }
 
-        Backups.CheckAutomatic(DateTimeOffset.Now);
+        checkingBackup = true;
+        try
+        {
+            await RunStorageAsync(() => Backups.CheckAutomatic(DateTimeOffset.Now));
+        }
+        finally
+        {
+            checkingBackup = false;
+        }
         if (MainWindow is MainWindow main)
         {
             foreach (var window in main.OwnedWindows.OfType<SettingsWindow>())
@@ -293,9 +333,9 @@ public partial class App : Application
         }
     }
 
-    internal RestoreResult RestoreBackup(FullBackup backup, RestoreScope scope)
+    internal async Task<RestoreResult> RestoreBackupAsync(FullBackup backup, RestoreScope scope)
     {
-        var result = Backups.Restore(backup, scope);
+        var result = await RunStorageAsync(() => Backups.Restore(backup, scope));
         var main = (MainWindow)MainWindow;
         if (result.Journal is { } data)
         {
@@ -325,6 +365,31 @@ public partial class App : Application
 
         return result;
     }
+
+    internal async Task<T> RunStorageAsync<T>(Func<T> operation)
+    {
+        await storageGate.WaitAsync();
+        try
+        {
+            return await Task.Run(operation);
+        }
+        finally
+        {
+            storageGate.Release();
+        }
+    }
+
+    internal Task RunStorageAsync(Action operation) => RunStorageAsync(() =>
+    {
+        operation();
+        return true;
+    });
+
+    private Task<JournalData> RunJournalWriteAsync(Func<JournalData> operation) => RunStorageAsync(() =>
+    {
+        Backups.EnsureNoPendingRestore();
+        return operation();
+    });
 
     private static bool IsJournalStorageError(Exception error) =>
         error is IOException or UnauthorizedAccessException or SecurityException or JsonException;

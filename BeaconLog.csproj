@@ -6,8 +6,12 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ApplicationIcon>Assets/BeaconLog.ico</ApplicationIcon>
+    <Version>0.1.14</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <DefaultItemExcludes>$(DefaultItemExcludes);tests/**</DefaultItemExcludes>
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="Assets/BeaconLog.ico" />
+    <InternalsVisibleTo Include="BeaconLog.Tests" />
   </ItemGroup>
 </Project>

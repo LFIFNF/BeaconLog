@@ -1,6 +1,8 @@
 using System;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
@@ -11,6 +13,8 @@ public partial class BackupRestoreWindow : Window
 {
     private sealed record BackupChoice(string Name, string FilePath);
     private FullBackup? selected;
+    private int selectionGeneration;
+    private bool restoring;
     private App BeaconLogApp => (App)Application.Current;
     internal string? SafetyCopy { get; private set; }
 
@@ -34,15 +38,15 @@ public partial class BackupRestoreWindow : Window
         }
     }
 
-    private void LocalBackups_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void LocalBackups_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (LocalBackups.SelectedItem is BackupChoice choice)
         {
-            LoadBackup(choice.FilePath);
+            await LoadBackupAsync(choice.FilePath);
         }
     }
 
-    private void Browse_Click(object sender, RoutedEventArgs e)
+    private async void Browse_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog
         {
@@ -51,19 +55,25 @@ public partial class BackupRestoreWindow : Window
         if (dialog.ShowDialog(this) == true)
         {
             LocalBackups.SelectedIndex = -1;
-            LoadBackup(dialog.FileName);
+            await LoadBackupAsync(dialog.FileName);
         }
     }
 
-    private void LoadBackup(string path)
+    private async Task LoadBackupAsync(string path)
     {
+        var generation = ++selectionGeneration;
         selected = null;
         RestoreButton.IsEnabled = false;
         RestoreError.Text = "";
         Summary.Text = Path.GetFileName(path);
         try
         {
-            selected = BackupService.ReadBackup(path);
+            var backup = await BeaconLogApp.RunStorageAsync(() => BackupService.ReadBackup(path));
+            if (generation != selectionGeneration)
+            {
+                return;
+            }
+            selected = backup;
             Summary.Text = $"{Path.GetFileName(path)}\n{selected.CreatedAt:yyyy-MM-dd HH:mm} · "
                 + $"{selected.Journal.Entries.Count} 条记录 · {selected.Journal.Categories.Count} 个分类";
             if (selected.UnreadableHistory is not null)
@@ -75,7 +85,10 @@ public partial class BackupRestoreWindow : Window
         }
         catch (Exception error) when (BackupService.IsDataError(error))
         {
-            RestoreError.Text = $"无法读取备份。{error.Message}";
+            if (generation == selectionGeneration)
+            {
+                RestoreError.Text = $"无法读取备份。{error.Message}";
+            }
         }
     }
 
@@ -98,7 +111,7 @@ public partial class BackupRestoreWindow : Window
         }
     }
 
-    private void Restore_Click(object sender, RoutedEventArgs e)
+    private async void Restore_Click(object sender, RoutedEventArgs e)
     {
         if (selected is not { } backup || MessageBox.Show(this,
             $"{ScopeText}\n恢复前会另存当前数据。是否继续？", "确认恢复",
@@ -107,14 +120,36 @@ public partial class BackupRestoreWindow : Window
             return;
         }
 
+        var scope = Scope;
+        restoring = true;
+        ((UIElement)Content).IsEnabled = false;
         try
         {
-            SafetyCopy = BeaconLogApp.RestoreBackup(backup, Scope).SafetyCopy;
-            DialogResult = true;
+            SafetyCopy = (await BeaconLogApp.RestoreBackupAsync(backup, scope)).SafetyCopy;
         }
         catch (Exception error) when (BackupService.IsDataError(error))
         {
             RestoreError.Text = $"未能完成恢复。{error.Message}";
         }
+        finally
+        {
+            restoring = false;
+            ((UIElement)Content).IsEnabled = true;
+        }
+        if (SafetyCopy is not null)
+        {
+            DialogResult = true;
+        }
+    }
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        if (restoring)
+        {
+            e.Cancel = true;
+            return;
+        }
+        selectionGeneration++;
+        base.OnClosing(e);
     }
 }

@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Globalization;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -20,11 +22,11 @@ internal sealed class StatusBallInputWindow : Window
     private readonly ComboBox categorySelector;
     private readonly IReadOnlyList<JournalCategory> categories;
     private readonly TextBlock errorText;
-    private readonly Func<string, JournalCategory, string?> save;
+    private readonly Func<string, JournalCategory, Task<string?>> save;
     private bool closing;
 
     internal StatusBallInputWindow(FrameworkElement ball, string text, IReadOnlyList<JournalCategory> categories,
-        JournalCategory selected, Func<string, JournalCategory, string?> save, bool isEdit)
+        JournalCategory selected, Func<string, JournalCategory, Task<string?>> save, bool isEdit)
     {
         this.ball = ball;
         this.categories = categories;
@@ -39,7 +41,7 @@ internal sealed class StatusBallInputWindow : Window
         Background = Brushes.Transparent;
         ShowInTaskbar = false;
         Title = isEdit ? "修改记录" : "添加记录";
-        Width = 420;
+        Width = 394;
         Height = 64;
         UseLayoutRounding = true;
         FontFamily = new FontFamily("Segoe UI, Microsoft YaHei UI");
@@ -84,18 +86,18 @@ internal sealed class StatusBallInputWindow : Window
         };
         categorySelector = new ComboBox
         {
-            Width = 88,
             Height = 34,
-            Margin = new Thickness(0, 0, 8, 0),
+            Margin = new Thickness(0, 0, 6, 0),
             VerticalContentAlignment = VerticalAlignment.Center,
             DisplayMemberPath = nameof(JournalCategory.Name),
             ItemsSource = categories.Contains(selected) ? categories : categories.Append(selected).ToArray(),
             SelectedItem = selected,
             MaxDropDownHeight = 200,
+            Style = (Style)FindResource("CompactCategorySelector"),
         };
         AutomationProperties.SetName(categorySelector, "类型");
-        categorySelector.SelectionChanged += (_, _) => categorySelector.ToolTip = $"类型：{SelectedCategory.Name}";
-        categorySelector.ToolTip = $"类型：{SelectedCategory.Name}";
+        categorySelector.SelectionChanged += (_, _) => UpdateCategorySelector();
+        UpdateCategorySelector();
         var submit = new Button
         {
             Content = isEdit ? "保存" : "提交",
@@ -129,6 +131,7 @@ internal sealed class StatusBallInputWindow : Window
         ballWindow.StateChanged += OwnerStateChanged;
         Loaded += (_, _) =>
         {
+            UpdateCategorySelector();
             input.Focus();
             input.CaretIndex = input.Text.Length;
         };
@@ -136,9 +139,20 @@ internal sealed class StatusBallInputWindow : Window
     }
 
     internal bool WasSaved { get; private set; }
+    internal bool IsSaving { get; private set; }
     internal bool WasDismissedByKeyboard { get; private set; }
     internal string UnsubmittedText => input.Text;
     internal JournalCategory SelectedCategory => (JournalCategory?)categorySelector.SelectedItem ?? JournalCategory.Ordinary;
+
+    private void UpdateCategorySelector()
+    {
+        var name = SelectedCategory.Name;
+        categorySelector.ToolTip = $"类型：{name}";
+        var text = new FormattedText(name, CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+            new Typeface(FontFamily, FontStyle, FontWeight, FontStretch), categorySelector.FontSize,
+            Brushes.Black, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+        categorySelector.Width = Math.Clamp(Math.Ceiling(text.Width) + 24, 52, 112);
+    }
 
     protected override void OnSourceInitialized(EventArgs e)
     {
@@ -202,15 +216,31 @@ internal sealed class StatusBallInputWindow : Window
         return true;
     }
 
-    private void Submit()
+    private async void Submit()
     {
+        if (IsSaving)
+        {
+            return;
+        }
         if (string.IsNullOrWhiteSpace(input.Text))
         {
             ShowError("请输入要保存的内容。");
             return;
         }
 
-        var error = save(input.Text.Trim(), SelectedCategory);
+        IsSaving = true;
+        var content = (UIElement)Content;
+        content.IsEnabled = false;
+        string? error;
+        try
+        {
+            error = await save(input.Text.Trim(), SelectedCategory);
+        }
+        finally
+        {
+            IsSaving = false;
+            content.IsEnabled = true;
+        }
         if (error is not null)
         {
             ShowError(error);
@@ -260,7 +290,7 @@ internal sealed class StatusBallInputWindow : Window
 
     private void CloseInput()
     {
-        if (!closing)
+        if (!closing && !IsSaving)
         {
             Close();
         }
@@ -268,6 +298,11 @@ internal sealed class StatusBallInputWindow : Window
 
     protected override void OnClosing(CancelEventArgs e)
     {
+        if (IsSaving)
+        {
+            e.Cancel = true;
+            return;
+        }
         closing = true;
         base.OnClosing(e);
     }

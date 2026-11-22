@@ -122,6 +122,17 @@ internal sealed class JournalStore(string path)
         data.Entries[index] = current with { Text = text, Category = category };
     });
 
+    internal JournalData Delete(Guid id) => Update(data =>
+    {
+        var index = data.Entries.FindIndex(entry => entry.Id == id);
+        if (index < 0)
+        {
+            throw new IOException("该记录已不存在。");
+        }
+
+        data.Entries.RemoveAt(index);
+    });
+
     internal JournalData AddCategory(string name) => Update(data =>
     {
         ValidateCategoryName(data, name);
@@ -225,12 +236,22 @@ internal sealed class JournalStore(string path)
 
     internal byte[] ReadUnparsed() => File.ReadAllBytes(path);
 
-    internal void WriteLocked(JournalData data)
+    internal (long Length, DateTime ChangedAt) ReadFileStamp()
+    {
+        var file = new FileInfo(path);
+        return file.Exists ? (file.Length, file.LastWriteTimeUtc) : (0, default);
+    }
+
+    internal void WriteLocked(JournalData data) => ReplaceLocked(stream => JsonSerializer.Serialize(stream, data));
+
+    internal void WriteUnparsedLocked(byte[] data) => ReplaceLocked(stream => stream.Write(data));
+
+    private void ReplaceLocked(Action<Stream> write)
     {
         var temporaryPath = path + ".tmp";
         using (var temporary = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write, FileShare.None))
         {
-            JsonSerializer.Serialize(temporary, data);
+            write(temporary);
             temporary.Flush(flushToDisk: true);
         }
 

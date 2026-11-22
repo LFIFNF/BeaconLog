@@ -121,6 +121,40 @@ public partial class MainWindow : Window
         }
     }
 
+    private static ListBoxItem? JournalMenuRow(object sender) =>
+        sender is MenuItem menu && ItemsControl.ItemsControlFromItemContainer(menu) is ContextMenu context
+            ? context.PlacementTarget as ListBoxItem : null;
+
+    private void JournalMenuEdit_Click(object sender, RoutedEventArgs e)
+    {
+        if (JournalMenuRow(sender) is { Content: JournalEntry entry } row)
+        {
+            ((App)Application.Current).ShowJournalEditor(row, entry);
+        }
+    }
+
+    private async void JournalMenuDelete_Click(object sender, RoutedEventArgs e)
+    {
+        if (JournalMenuRow(sender) is not { Content: JournalEntry entry })
+        {
+            return;
+        }
+
+        var elements = System.Globalization.StringInfo.ParseCombiningCharacters(entry.Text);
+        var summary = elements.Length > 70 ? entry.Text[..elements[70]] + "…" : entry.Text;
+        if (MessageBox.Show(this, $"删除这条记录？\n\n{summary}", "删除记录",
+            MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        var error = await ((App)Application.Current).DeleteJournalEntryAsync(entry.Id);
+        if (error is not null)
+        {
+            MessageBox.Show(this, error, "删除记录", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
     private void JournalList_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Enter && JournalList.SelectedItem is JournalEntry entry)

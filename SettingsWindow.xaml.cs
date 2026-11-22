@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Security;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
@@ -53,7 +54,7 @@ public partial class SettingsWindow : Window
         }
     }
 
-    private void SaveOption_Click(object sender, RoutedEventArgs e)
+    private async void SaveOption_Click(object sender, RoutedEventArgs e)
     {
         var option = (CheckBox)sender;
         var enabled = option.IsChecked == true;
@@ -80,7 +81,7 @@ public partial class SettingsWindow : Window
             else
             {
                 StartupSettings.AutomaticBackup = enabled;
-                BeaconLogApp.CheckAutomaticBackup();
+                await BeaconLogApp.CheckAutomaticBackupAsync();
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or SecurityException)
@@ -93,16 +94,16 @@ public partial class SettingsWindow : Window
 
     internal void RefreshBackupStatus()
     {
-        var service = BeaconLogApp.Backups;
-        var last = service.LastAutomaticBackup is { } timestamp
+        var status = BeaconLogApp.Backups.AutomaticStatus;
+        var last = status.LastBackup is { } timestamp
             ? $"最近自动备份：{timestamp:yyyy-MM-dd HH:mm}" : "暂无自动备份";
-        BackupStatus.Text = service.AutomaticError is { } error ? $"{last} · {error}" : last;
+        BackupStatus.Text = status.Error is { } error ? $"{last} · {error}" : last;
     }
 
-    private void ExportHistory_Click(object sender, RoutedEventArgs e) => SaveData(complete: false);
-    private void BackupNow_Click(object sender, RoutedEventArgs e) => SaveData(complete: true);
+    private async void ExportHistory_Click(object sender, RoutedEventArgs e) => await SaveDataAsync(complete: false);
+    private async void BackupNow_Click(object sender, RoutedEventArgs e) => await SaveDataAsync(complete: true);
 
-    private void SaveData(bool complete)
+    private async Task SaveDataAsync(bool complete)
     {
         var prefix = complete ? "BeaconLog-backup" : "BeaconLog-history";
         var dialog = new SaveFileDialog
@@ -120,13 +121,14 @@ public partial class SettingsWindow : Window
 
         try
         {
+            var path = dialog.FileName;
             if (complete)
             {
-                BeaconLogApp.Backups.SaveManualBackup(dialog.FileName);
+                await BeaconLogApp.RunStorageAsync(() => BeaconLogApp.Backups.SaveManualBackup(path));
             }
             else
             {
-                BeaconLogApp.Backups.ExportHistory(dialog.FileName);
+                await BeaconLogApp.RunStorageAsync(() => BeaconLogApp.Backups.ExportHistory(path));
             }
             DataFeedback.Text = complete ? "完整备份已保存。" : "历史数据已导出。";
         }

@@ -3,6 +3,75 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              ShutdownMode="OnExplicitShutdown">
     <Application.Resources>
+        <Style x:Key="CompactCategorySelector" TargetType="ComboBox">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Foreground" Value="#243E46" />
+            <Setter Property="Background" Value="#F2F7F8" />
+            <Setter Property="BorderBrush" Value="#D6E4E7" />
+            <Setter Property="ItemContainerStyle">
+                <Setter.Value>
+                    <Style TargetType="ComboBoxItem">
+                        <Setter Property="Padding" Value="8,5" />
+                        <Setter Property="ToolTip" Value="{Binding Name}" />
+                    </Style>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton x:Name="Toggle" Focusable="False" IsTabStop="False" ClickMode="Press"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                          Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border x:Name="Surface" CornerRadius="7" BorderThickness="1"
+                                                Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" />
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Surface" Property="Background" Value="#E7F2F4" />
+                                            </Trigger>
+                                            <Trigger Property="IsChecked" Value="True">
+                                                <Setter TargetName="Surface" Property="Background" Value="#E0EFF1" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <Grid Margin="7,0,6,0" IsHitTestVisible="False">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="9" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="{Binding SelectedItem.Name, RelativeSource={RelativeSource TemplatedParent}}"
+                                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                <Path Grid.Column="1" Data="M 0,0 L 3,3 6,0" StrokeThickness="1.2" Stroke="#4C6770"
+                                      HorizontalAlignment="Right" VerticalAlignment="Center" />
+                            </Grid>
+                            <Border x:Name="FocusOutline" CornerRadius="7" BorderThickness="1"
+                                    BorderBrush="Transparent" IsHitTestVisible="False" />
+                            <Popup x:Name="PART_Popup" Placement="Bottom" AllowsTransparency="True"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}" Focusable="False">
+                                <Border Background="White" BorderBrush="#CFDFE3" BorderThickness="1" CornerRadius="6"
+                                        MinWidth="116" MaxWidth="240" MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                        <ItemsPresenter />
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="FocusOutline" Property="BorderBrush" Value="#338A91" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.55" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <DataTemplate x:Key="JournalRowTemplate">
             <Grid Margin="5,7,10,7">
                 <Grid.ColumnDefinitions>
@@ -15,7 +84,7 @@
                 <TextBlock Grid.Column="1" Text="{Binding ClockText}" ToolTip="{Binding DurationText}"
                            Foreground="#485564" HorizontalAlignment="Left" FontSize="13" />
                 <DockPanel Grid.Column="2">
-                    <Border DockPanel.Dock="Right" MaxWidth="106" Margin="8,0,0,0" VerticalAlignment="Top"
+                    <Border DockPanel.Dock="Left" MaxWidth="106" Margin="0,0,8,0" VerticalAlignment="Top"
                             Padding="5,2" Background="#E8F4F4" CornerRadius="4" ToolTip="{Binding CategoryLabel}">
                         <Border.Style>
                             <Style TargetType="Border">
@@ -27,7 +96,7 @@
                             </Style>
                         </Border.Style>
                         <TextBlock Text="{Binding CategoryLabel}" TextTrimming="CharacterEllipsis"
-                                   FontSize="11" Foreground="#206168" />
+                                   FontSize="14" Foreground="#206168" />
                     </Border>
                     <TextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="14" />
                 </DockPanel>

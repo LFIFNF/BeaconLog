@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Threading.Tasks;
 
 namespace BeaconLog;
 
@@ -49,15 +50,15 @@ public partial class JournalCategoriesWindow : Window
         CategoryName.SelectAll();
     }
 
-    private void Save_Click(object sender, RoutedEventArgs e) => SaveEditor();
+    private async void Save_Click(object sender, RoutedEventArgs e) => await SaveEditorAsync();
     private void Cancel_Click(object sender, RoutedEventArgs e) => CategoryEditor.Visibility = Visibility.Collapsed;
 
-    private void CategoryName_PreviewKeyDown(object sender, KeyEventArgs e)
+    private async void CategoryName_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Enter)
         {
             e.Handled = true;
-            SaveEditor();
+            await SaveEditorAsync();
         }
         else if (e.Key == Key.Escape)
         {
@@ -66,7 +67,7 @@ public partial class JournalCategoriesWindow : Window
         }
     }
 
-    private void SaveEditor()
+    private async Task SaveEditorAsync()
     {
         var name = CategoryName.Text.Trim();
         if (!JournalCategory.IsValidName(name))
@@ -77,7 +78,7 @@ public partial class JournalCategoriesWindow : Window
 
         if (renameTarget is not { } target)
         {
-            if (Apply(store => store.AddCategory(name)))
+            if (await ApplyAsync(store => store.AddCategory(name)))
             {
                 RefreshList(BeaconLogApp.JournalCategories[^1]);
             }
@@ -97,13 +98,13 @@ public partial class JournalCategoriesWindow : Window
             return;
         }
 
-        if (Apply(store => store.RenameCategory(target.Id, name, history.Value)))
+        if (await ApplyAsync(store => store.RenameCategory(target.Id, name, history.Value)))
         {
             RefreshList(target with { Name = name });
         }
     }
 
-    private void Delete_Click(object sender, RoutedEventArgs e)
+    private async void Delete_Click(object sender, RoutedEventArgs e)
     {
         if (CategoryList.SelectedIndex <= 0 || CategoryList.SelectedItem is not JournalCategory selected)
         {
@@ -111,27 +112,37 @@ public partial class JournalCategoriesWindow : Window
         }
 
         var history = JournalCategoryHistoryPrompt.Ask(this, isDelete: true);
-        if (history is { } apply && Apply(store => store.DeleteCategory(selected.Id, apply)))
+        if (history is { } apply && await ApplyAsync(store => store.DeleteCategory(selected.Id, apply)))
         {
             RefreshList(JournalCategory.Ordinary);
         }
     }
 
-    private void Up_Click(object sender, RoutedEventArgs e) => Move(-1);
-    private void Down_Click(object sender, RoutedEventArgs e) => Move(1);
+    private async void Up_Click(object sender, RoutedEventArgs e) => await MoveAsync(-1);
+    private async void Down_Click(object sender, RoutedEventArgs e) => await MoveAsync(1);
 
-    private void Move(int offset)
+    private async Task MoveAsync(int offset)
     {
         if (CategoryList.SelectedIndex > 0 && CategoryList.SelectedItem is JournalCategory selected
-            && Apply(store => store.MoveCategory(selected.Id, offset)))
+            && await ApplyAsync(store => store.MoveCategory(selected.Id, offset)))
         {
             RefreshList(selected);
         }
     }
 
-    private bool Apply(System.Func<JournalStore, JournalData> change)
+    private async Task<bool> ApplyAsync(System.Func<JournalStore, JournalData> change)
     {
-        var error = BeaconLogApp.ChangeJournalCategories(change);
+        var content = (UIElement)Content;
+        content.IsEnabled = false;
+        string? error;
+        try
+        {
+            error = await BeaconLogApp.ChangeJournalCategoriesAsync(change);
+        }
+        finally
+        {
+            content.IsEnabled = true;
+        }
         ActionError.Text = error ?? "";
         if (error is not null)
         {
