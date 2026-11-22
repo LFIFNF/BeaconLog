@@ -111,7 +111,7 @@ public partial class MainWindow : Window
     }
 
     private void ResetTimer_Click(object sender, RoutedEventArgs e) =>
-        ((App)Application.Current).ConfirmTimerReset(this);
+        ((App)Application.Current).ShowTimerResetConfirmation(ResetTimerButton);
 
     internal void ShowJournal(IReadOnlyList<JournalEntry> entries, JournalEntry? edited = null)
     {

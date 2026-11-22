@@ -30,6 +30,7 @@ internal static class Program
             TestRecords(root);
             TestBackups(root);
             TestTimerReset();
+            TestConfirmationPlacement();
             LayoutChecks.Run();
             if (args.Contains("--benchmark", StringComparer.Ordinal))
             {
@@ -247,6 +248,23 @@ internal static class Program
         Equal(0d, press.Progress, "cancel clears progress");
         Equal(false, press.Advance(TimeSpan.FromSeconds(2)), "cancelled press cannot reset");
         Equal(true, press.End(), "cancelled press consumes click");
+    }
+
+    private static void TestConfirmationPlacement()
+    {
+        // This work area represents a secondary screen to the left of the primary one.
+        var area = new System.Drawing.Rectangle(-1024, 0, 1024, 728);
+        var size = new System.Drawing.Size(168, 81);
+        Equal(new System.Drawing.Point(-600, 140),
+            ScreenPlacement.Near(new(-600, 100, 34, 34), size, area, 6, preferBeside: false), "under toolbar button");
+        Equal(new System.Drawing.Point(-600, 601),
+            ScreenPlacement.Near(new(-600, 688, 34, 34), size, area, 6, preferBeside: false), "above lower screen edge");
+        Equal(new System.Drawing.Point(-570, 88),
+            ScreenPlacement.Near(new(-600, 116, 24, 24), size, area, 6, preferBeside: true), "beside floating ball");
+        Equal(new System.Drawing.Point(-202, 647),
+            ScreenPlacement.Near(new(-28, 700, 24, 24), size, area, 6, preferBeside: true), "flip and clamp at right lower edge");
+        Equal(new System.Drawing.Point(-168, 140),
+            ScreenPlacement.Near(new(-28, 100, 24, 34), size, area, 6, preferBeside: false), "clamp toolbar panel horizontally");
     }
 
     private static double MedianMilliseconds(Action operation)

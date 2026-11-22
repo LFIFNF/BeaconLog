@@ -5,6 +5,7 @@ using System.Security;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using Drawing = System.Drawing;
 using Forms = System.Windows.Forms;
@@ -174,6 +175,11 @@ public partial class FloatingStatusWindow : Window
         Close();
     }
 
-    private void ResetTimer_Click(object sender, RoutedEventArgs e) =>
-        ((App)Application.Current).ConfirmTimerReset(this);
+    private void ResetTimer_Click(object sender, RoutedEventArgs e)
+    {
+        // Give the right-click menu time to release focus before showing the panel.
+        _ = Dispatcher.InvokeAsync(() =>
+            ((App)Application.Current).ShowTimerResetConfirmation(FloatingBall, preferBeside: true),
+            DispatcherPriority.Input);
+    }
 }

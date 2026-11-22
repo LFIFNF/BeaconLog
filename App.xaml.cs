@@ -34,6 +34,7 @@ public partial class App : Application
     private IReadOnlyList<StatusBallColorRule> colorRules = [];
     private DispatcherTimer? timelineTimer;
     private readonly SleepIntervalDetector sleepDetector = new();
+    private TimerResetConfirmation? timerResetConfirmation;
     private bool watchingPower;
     private DateTimeOffset lastTimelineTick;
     private long lastReminderMinute;
@@ -418,17 +419,23 @@ public partial class App : Application
         UpdateColorTimeline(now);
     }
 
-    internal void ConfirmTimerReset(Window owner)
+    internal void ShowTimerResetConfirmation(FrameworkElement anchor, bool preferBeside = false)
     {
-        if (MessageBox.Show(owner, "是否重置计时？", "重置计时",
-            MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) == MessageBoxResult.Yes)
+        if (!anchor.IsVisible || PresentationSource.FromVisual(anchor) is null)
         {
-            ResetTiming(DateTimeOffset.UtcNow);
+            return;
         }
+
+        timerResetConfirmation?.Close();
+        var panel = new TimerResetConfirmation(anchor, preferBeside, () => ResetTiming(DateTimeOffset.UtcNow));
+        timerResetConfirmation = panel;
+        panel.Closed += (_, _) => timerResetConfirmation = null;
+        panel.Show();
     }
 
     internal void ResetTiming(DateTimeOffset now)
     {
+        timerResetConfirmation?.Close();
         sleepDetector.Rebase(SleepClockSample.Read());
         startedAt = now;
         ResetReminderState(now);
