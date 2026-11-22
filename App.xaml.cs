@@ -31,6 +31,7 @@ public partial class App : Application
     private DispatcherTimer? fullscreenTimer;
     private bool hideWhenFullscreen;
     private DateTimeOffset startedAt = DateTimeOffset.UtcNow;
+    private long? displayedMinute;
     private IReadOnlyList<StatusBallColorRule> colorRules = [];
     private DispatcherTimer? timelineTimer;
     private readonly SleepIntervalDetector sleepDetector = new();
@@ -153,7 +154,7 @@ public partial class App : Application
         trayIcon = new Forms.NotifyIcon
         {
             Icon = trayArtwork,
-            Text = "BeaconLog",
+            Text = $"BeaconLog\n{FormatElapsedTime(displayedMinute ?? 0)}",
             ContextMenuStrip = trayMenu,
         };
         trayIcon.DoubleClick += (_, _) => ShowMainWindow();
@@ -471,12 +472,30 @@ public partial class App : Application
 
     private double ElapsedMinutes(DateTimeOffset now) => Math.Max(0, (now - startedAt).TotalMinutes);
 
+    private static string FormatElapsedTime(long minute) => $"已经过 {minute} 分钟";
+
+    private void UpdateElapsedDisplay(MainWindow main, long minute)
+    {
+        if (displayedMinute == minute)
+        {
+            return;
+        }
+
+        displayedMinute = minute;
+        var text = FormatElapsedTime(minute);
+        main.UpdateElapsedTime(text);
+        if (trayIcon is { } icon)
+        {
+            icon.Text = $"BeaconLog\n{text}";
+        }
+    }
+
     private void UpdateColorTimeline(DateTimeOffset now)
     {
         var elapsed = ElapsedMinutes(now);
         var minute = (long)elapsed;
         var main = (MainWindow)MainWindow;
-        main.UpdateElapsedTime(minute);
+        UpdateElapsedDisplay(main, minute);
         main.UpdateJournalDate(now.ToLocalTime());
         var appearance = StatusBallAppearance.Current;
         appearance.ShowTimelineColor(StatusBallTimeline.Resolve(appearance.ColorHex, colorRules, elapsed));

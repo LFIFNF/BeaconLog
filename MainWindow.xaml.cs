@@ -12,7 +12,6 @@ namespace BeaconLog;
 public partial class MainWindow : Window
 {
     private StatusBallRippleWindow? ripple;
-    private long displayedMinute;
     private bool scrollJournalWhenVisible;
     private DateOnly today = DateOnly.FromDateTime(DateTime.Now);
     private ILookup<DateOnly, JournalEntry> journalByDate = Array.Empty<JournalEntry>().ToLookup(entry => entry.RecordedDate);
@@ -241,14 +240,7 @@ public partial class MainWindow : Window
         ((App)Application.Current).ShowBallInput(MainBall);
     }
 
-    internal void UpdateElapsedTime(long minute)
-    {
-        if (displayedMinute != minute)
-        {
-            displayedMinute = minute;
-            ElapsedStatus.Text = $"已经过 {minute} 分钟";
-        }
-    }
+    internal void UpdateElapsedTime(string text) => ElapsedStatus.Text = text;
 
     internal void PlayLocationCue()
     {

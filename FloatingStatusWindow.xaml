@@ -17,7 +17,7 @@
                  Fill="{Binding BackgroundFill}" Opacity="0.5" />
         <Ellipse x:Name="FloatingBall" AutomationProperties.Name="状态球" HorizontalAlignment="Center"
                  VerticalAlignment="Center" Width="{Binding Diameter}" Height="{Binding Diameter}"
-                 Fill="{Binding Fill}" Cursor="SizeAll" MouseLeftButtonDown="Ball_MouseLeftButtonDown"
+                 Fill="{Binding Fill}" MouseLeftButtonDown="Ball_MouseLeftButtonDown"
                  MouseMove="Ball_MouseMove" MouseLeftButtonUp="Ball_MouseLeftButtonUp" />
     </Grid>
 </Window>
