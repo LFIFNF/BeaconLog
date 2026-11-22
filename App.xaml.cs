@@ -240,7 +240,7 @@ public partial class App : Application
         JournalData data;
         try
         {
-            data = await RunJournalWriteAsync(() => journal.Add(entry));
+            data = await RunStorageAsync(() => journal.Add(entry));
         }
         catch (InvalidOperationException error)
         {
@@ -264,7 +264,7 @@ public partial class App : Application
         JournalData data;
         try
         {
-            data = await RunJournalWriteAsync(() => journal.Edit(original, text, category));
+            data = await RunStorageAsync(() => journal.Edit(original, text, category));
         }
         catch (InvalidOperationException error)
         {
@@ -289,7 +289,7 @@ public partial class App : Application
     {
         try
         {
-            PublishJournal(await RunJournalWriteAsync(() => change(journal)));
+            PublishJournal(await RunStorageAsync(() => change(journal)));
             return null;
         }
         catch (InvalidOperationException error)
@@ -383,12 +383,6 @@ public partial class App : Application
     {
         operation();
         return true;
-    });
-
-    private Task<JournalData> RunJournalWriteAsync(Func<JournalData> operation) => RunStorageAsync(() =>
-    {
-        Backups.EnsureNoPendingRestore();
-        return operation();
     });
 
     private static bool IsJournalStorageError(Exception error) =>

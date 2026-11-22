@@ -74,32 +74,29 @@
         </Style>
         <DataTemplate x:Key="JournalRowTemplate">
             <Grid Margin="5,7,10,7">
+                <Grid.Resources>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="FontSize" Value="14" />
+                        <Setter Property="Foreground" Value="#243444" />
+                        <Setter Property="LineHeight" Value="20" />
+                        <Setter Property="LineStackingStrategy" Value="BlockLineHeight" />
+                        <Setter Property="VerticalAlignment" Value="Top" />
+                    </Style>
+                </Grid.Resources>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="14" />
-                    <ColumnDefinition Width="54" />
+                    <ColumnDefinition Width="15" />
+                    <ColumnDefinition Width="51" />
+                    <ColumnDefinition Width="84" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
-                <Border Width="3" MinHeight="18" CornerRadius="2" HorizontalAlignment="Left"
+                <Border Width="3" Height="16" Margin="0,2,0,0" CornerRadius="2"
+                        HorizontalAlignment="Left" VerticalAlignment="Top"
                         Background="{Binding ColorHex}" />
-                <TextBlock Grid.Column="1" Text="{Binding ClockText}" ToolTip="{Binding DurationText}"
-                           Foreground="#485564" HorizontalAlignment="Left" FontSize="13" />
-                <DockPanel Grid.Column="2">
-                    <Border DockPanel.Dock="Left" MaxWidth="106" Margin="0,0,8,0" VerticalAlignment="Top"
-                            Padding="5,2" Background="#E8F4F4" CornerRadius="4" ToolTip="{Binding CategoryLabel}">
-                        <Border.Style>
-                            <Style TargetType="Border">
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding CategoryLabel}" Value="{x:Null}">
-                                        <Setter Property="Visibility" Value="Collapsed" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </Border.Style>
-                        <TextBlock Text="{Binding CategoryLabel}" TextTrimming="CharacterEllipsis"
-                                   FontSize="14" Foreground="#206168" />
-                    </Border>
-                    <TextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="14" />
-                </DockPanel>
+                <TextBlock x:Name="RecordTime" Grid.Column="1" Text="{Binding ClockText}" ToolTip="{Binding DurationText}"
+                           HorizontalAlignment="Left" Margin="0,0,12,0" />
+                <TextBlock x:Name="RecordCategory" Grid.Column="2" Text="{Binding RecordCategory.Name}"
+                           ToolTip="{Binding RecordCategory.Name}" TextTrimming="CharacterEllipsis" Margin="0,0,12,0" />
+                <TextBlock x:Name="RecordBody" Grid.Column="3" Text="{Binding Text}" TextWrapping="Wrap" />
             </Grid>
         </DataTemplate>
     </Application.Resources>

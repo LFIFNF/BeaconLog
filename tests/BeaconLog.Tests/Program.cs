@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -12,7 +13,7 @@ internal static class Program
     private static extern int RegOverridePredefKey(IntPtr predefinedKey, IntPtr replacement);
 
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
         var root = Path.Combine(Path.GetTempPath(), $"BeaconLog.Tests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -28,7 +29,12 @@ internal static class Program
             }
             TestRecords(root);
             TestBackups(root);
-            Console.WriteLine("PASS: records, backup scopes, rollback, interrupted recovery, automatic retention");
+            LayoutChecks.Run();
+            if (args.Contains("--benchmark", StringComparer.Ordinal))
+            {
+                BenchmarkRecords(root);
+            }
+            Console.WriteLine("PASS: records, backup scopes, rollback, interrupted recovery, automatic retention, journal layout");
             return 0;
         }
         catch (Exception error)
@@ -62,8 +68,18 @@ internal static class Program
         var edited = Entry("second");
         File.WriteAllText(path, JsonSerializer.Serialize(new[] { first }));
         Equal(JournalCategory.Ordinary, store.Load().Entries.Single().RecordCategory, "legacy category");
+        var guardRan = false;
+        store.CheckMutation = () =>
+        {
+            Throws<IOException>(() =>
+            {
+                using var unexpected = store.AcquireWriteLock();
+            });
+            guardRan = true;
+        };
 
         var category = store.AddCategory("Work").Categories[^1];
+        Equal(true, guardRan, "mutation guard runs under the write lock");
         store.Add(edited with { Category = category });
         store.Edit(edited with { Category = category }, "changed", category);
         var records = store.Load().Entries;
@@ -134,6 +150,8 @@ internal static class Program
         var interruptedCopy = Path.Combine(folder, "before-restore-test.json");
         service.SaveManualBackup(interruptedCopy);
         File.WriteAllText(pending, JsonSerializer.Serialize(new PendingRestore(Path.GetFileName(interruptedCopy), true, login)));
+        Throws<IOException>(() => store.Delete(first.Id));
+        Equal(2, store.Load().Entries.Count, "pending restore blocks ordinary deletion");
         using (store.AcquireWriteLock()) store.WriteLocked(snapshot.Journal);
         SetDiameter(22);
         StartupSettings.SetLoginRegistration(null);
@@ -166,6 +184,42 @@ internal static class Program
             service.CheckAutomatic(now.AddDays(day));
         }
         Equal(7, Directory.GetFiles(folder, "automatic-*.json").Length, "retention and daily limit");
+    }
+
+    private static void BenchmarkRecords(string root)
+    {
+        foreach (var count in new[] { 1_000, 10_000, 50_000 })
+        {
+            var path = Path.Combine(root, $"benchmark-{count}.json");
+            var store = new JournalStore(path);
+            var start = new DateTimeOffset(2024, 1, 1, 9, 0, 0, TimeSpan.FromHours(8));
+            var entries = Enumerable.Range(0, count).Select(index => new JournalEntry(Guid.NewGuid(),
+                $"完成第 {index} 项工作 · Review notes and update the journal.", start.AddMinutes(index * 30L),
+                "#147258", 125, JournalCategory.Ordinary)).ToList();
+            var data = JournalData.Empty();
+            data.Entries.AddRange(entries);
+            using (store.AcquireWriteLock()) store.WriteLocked(data);
+
+            var load = MedianMilliseconds(() => store.Load());
+            var indexTime = MedianMilliseconds(() => entries.ToLookup(entry => entry.RecordedDate));
+            var first = entries[0];
+            var update = MedianMilliseconds(() => store.Edit(first, first.Text + ".", JournalCategory.Ordinary));
+            Console.WriteLine($"{count,6} records | load {load,7:F2} ms | date index {indexTime,7:F2} ms | edit {update,7:F2} ms");
+        }
+    }
+
+    private static double MedianMilliseconds(Action operation)
+    {
+        operation();
+        var samples = new double[5];
+        for (var index = 0; index < samples.Length; index++)
+        {
+            var clock = Stopwatch.StartNew();
+            operation();
+            samples[index] = clock.Elapsed.TotalMilliseconds;
+        }
+        Array.Sort(samples);
+        return samples[samples.Length / 2];
     }
 
     private static void SetDiameter(int diameter)

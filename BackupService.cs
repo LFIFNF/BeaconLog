@@ -23,8 +23,17 @@ internal sealed record RestoreResult(JournalData? Journal, BackupPreferences? Se
 internal sealed record PendingRestore(string SnapshotName, bool RestoreHistory, string? PreviousLogin);
 internal sealed record AutomaticBackupStatus(DateTimeOffset? LastBackup, string? Error);
 
-internal sealed class BackupService(JournalStore journal, string folder)
+internal sealed class BackupService
 {
+    private readonly JournalStore journal;
+    private readonly string folder;
+
+    internal BackupService(JournalStore journal, string folder)
+    {
+        this.journal = journal;
+        this.folder = folder;
+        journal.CheckMutation = EnsureNoPendingRestore;
+    }
     private const string BackupKind = "BeaconLog.Backup";
     private const int FormatVersion = 1;
     private const string AutomaticPrefix = "automatic-";
@@ -229,6 +238,7 @@ internal sealed class BackupService(JournalStore journal, string folder)
             }
 
             using var writeLock = journal.AcquireWriteLock();
+            EnsureNoPendingRestore();
             if (File.Exists(target))
             {
                 automaticStatus = new(new DateTimeOffset(File.GetLastWriteTime(target)), null);

@@ -59,6 +59,7 @@ internal sealed record JournalData(int Version, List<JournalCategory> Categories
 
 internal sealed class JournalStore(string path)
 {
+    internal Action? CheckMutation { private get; set; }
     internal static JournalStore ForCurrentUser() => new(Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BeaconLog", "records.json"));
 
@@ -215,6 +216,7 @@ internal sealed class JournalStore(string path)
     private JournalData Update(Action<JournalData> change)
     {
         using var writeLock = AcquireWriteLock();
+        CheckMutation?.Invoke();
         var data = Load();
         change(data);
         WriteLocked(data);
