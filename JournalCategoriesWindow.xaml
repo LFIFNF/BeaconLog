@@ -1,0 +1,38 @@
+<Window x:Class="BeaconLog.JournalCategoriesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="记录分类" Icon="Assets/BeaconLog.ico" Width="420" Height="428"
+        MinWidth="360" MinHeight="340" WindowStartupLocation="CenterOwner"
+        Background="White" FontFamily="Segoe UI, Microsoft YaHei UI" UseLayoutRounding="True">
+    <DockPanel Margin="22">
+        <StackPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
+            <WrapPanel>
+                <WrapPanel.Resources>
+                    <Style TargetType="Button">
+                        <Setter Property="Padding" Value="10,4" />
+                        <Setter Property="Margin" Value="0,0,6,4" />
+                    </Style>
+                </WrapPanel.Resources>
+                <Button Content="添加" Click="Add_Click" />
+                <Button x:Name="RenameButton" Content="编辑" IsEnabled="False" Click="Rename_Click" />
+                <Button x:Name="DeleteButton" Content="删除" IsEnabled="False" Click="Delete_Click" />
+                <Button x:Name="UpButton" Content="上移" IsEnabled="False" Click="Up_Click" />
+                <Button x:Name="DownButton" Content="下移" IsEnabled="False" Click="Down_Click" />
+            </WrapPanel>
+            <TextBlock x:Name="ActionError" Foreground="#A62727" TextWrapping="Wrap" Margin="0,4,0,0" />
+            <Border x:Name="CategoryEditor" Visibility="Collapsed" Background="#F5F8FA"
+                    Padding="11" Margin="0,8,0,0" CornerRadius="7">
+                <StackPanel>
+                    <Label Content="分类名称" Target="{Binding ElementName=CategoryName}" Padding="0" Margin="0,0,0,4" />
+                    <TextBox x:Name="CategoryName" MaxLines="1" Padding="7,4" PreviewKeyDown="CategoryName_PreviewKeyDown" />
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button Content="保存" Padding="11,4" Margin="0,0,6,0" Click="Save_Click" />
+                        <Button Content="取消" Padding="11,4" Click="Cancel_Click" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+        <ListBox x:Name="CategoryList" AutomationProperties.Name="记录分类"
+                 DisplayMemberPath="Name" SelectionChanged="CategoryList_SelectionChanged" />
+    </DockPanel>
+</Window>

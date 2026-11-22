@@ -1,0 +1,531 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Drawing;
+using System.IO;
+using System.Linq;
+using System.Security;
+using System.Security.Principal;
+using System.Text.Json;
+using System.Threading;
+using System.Windows;
+using System.Windows.Threading;
+using Forms = System.Windows.Forms;
+
+namespace BeaconLog;
+
+public partial class App : Application
+{
+    private Forms.NotifyIcon? trayIcon;
+    private Icon? trayArtwork;
+    private Forms.ContextMenuStrip? trayMenu;
+    private bool exiting;
+    private Mutex? instanceMutex;
+    private EventWaitHandle? restoreRequest;
+    private RegisteredWaitHandle? restoreListener;
+    private bool ownsInstance;
+    private FloatingStatusWindow? floatingWindow;
+    private DispatcherTimer? fullscreenTimer;
+    private bool hideWhenFullscreen;
+    private DateTimeOffset startedAt = DateTimeOffset.UtcNow;
+    private IReadOnlyList<StatusBallColorRule> colorRules = [];
+    private DispatcherTimer? timelineTimer;
+    private DateTimeOffset lastTimelineTick;
+    private long lastReminderMinute;
+    private (long Start, long End)? pendingReminder;
+    private StatusBallInputWindow? inputWindow;
+    private readonly JournalStore journal = JournalStore.ForCurrentUser();
+    private BackupService? backups;
+    private DispatcherTimer? backupTimer;
+    internal BackupService Backups => backups ??= new BackupService(journal, Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BeaconLog", "Backups"));
+    internal IReadOnlyList<JournalCategory> JournalCategories { get; private set; } = [JournalCategory.Ordinary];
+    private DispatcherTimer? draftTimer;
+    private (string Text, JournalCategory Category)? journalDraft;
+    private long draftSavedAt;
+    private static readonly TimeSpan DraftLifetime = TimeSpan.FromMinutes(1);
+
+    protected override void OnStartup(StartupEventArgs e)
+    {
+        base.OnStartup(e);
+
+        var launchedAtLogin = e.Args.Contains(StartupSettings.LoginArgument, StringComparer.Ordinal);
+        using var identity = WindowsIdentity.GetCurrent();
+        var instanceName = $@"Local\BeaconLog.{identity.User!.Value}";
+        restoreRequest = new EventWaitHandle(false, EventResetMode.AutoReset, instanceName + ".Restore");
+        instanceMutex = new Mutex(false, instanceName);
+        try
+        {
+            ownsInstance = instanceMutex.WaitOne(0);
+        }
+        catch (AbandonedMutexException)
+        {
+            ownsInstance = true;
+        }
+
+        if (!ownsInstance)
+        {
+            if (!launchedAtLogin)
+            {
+                restoreRequest.Set();
+            }
+
+            Shutdown();
+            return;
+        }
+
+        StartupSettings.UpgradeLoginRegistration();
+        hideWhenFullscreen = StartupSettings.HideWhenFullscreen;
+        var window = new MainWindow();
+        MainWindow = window;
+        window.Closing += HideMainWindow;
+        try
+        {
+            PublishJournal(journal.Load());
+        }
+        catch (Exception error) when (IsJournalStorageError(error))
+        {
+            window.ShowJournalLoadError();
+        }
+
+        ReloadColorTimeline();
+        timelineTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        timelineTimer.Tick += (_, _) => UpdateColorTimeline(DateTimeOffset.UtcNow);
+        timelineTimer.Start();
+        backupTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
+        backupTimer.Tick += (_, _) => CheckAutomaticBackup();
+        backupTimer.Start();
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, CheckAutomaticBackup);
+
+        trayMenu = new Forms.ContextMenuStrip();
+        trayMenu.Items.Add("打开主窗口", null, (_, _) => ShowMainWindow());
+        trayMenu.Items.Add("退出", null, (_, _) =>
+        {
+            exiting = true;
+            Shutdown();
+        });
+        using (var iconStream = GetResourceStream(new Uri("/BeaconLog;component/Assets/BeaconLog.ico", UriKind.Relative)).Stream)
+        {
+            trayArtwork = new Icon(iconStream, Forms.SystemInformation.SmallIconSize);
+        }
+
+        trayIcon = new Forms.NotifyIcon
+        {
+            Icon = trayArtwork,
+            Text = "BeaconLog",
+            ContextMenuStrip = trayMenu,
+        };
+        trayIcon.DoubleClick += (_, _) => ShowMainWindow();
+        trayIcon.Visible = true;
+
+        if (!launchedAtLogin || !StartupSettings.SilentStartup)
+        {
+            window.Show();
+        }
+
+        if (StartupSettings.OpenFloatingWindowAtStartup)
+        {
+            ShowFloatingWindow();
+        }
+
+        restoreListener = ThreadPool.RegisterWaitForSingleObject(restoreRequest, (_, _) =>
+        {
+            _ = Dispatcher.InvokeAsync(() =>
+            {
+                if (!exiting)
+                {
+                    ShowMainWindow();
+                }
+            });
+        }, null, Timeout.Infinite, executeOnlyOnce: false);
+    }
+
+    internal void ShowBallInput(FrameworkElement ball)
+    {
+        inputWindow?.Close();
+        var draft = Stopwatch.GetElapsedTime(draftSavedAt) < DraftLifetime ? journalDraft : null;
+        ClearDraft();
+        var selected = draft is { } saved
+            ? JournalCategories.FirstOrDefault(category => category.Id == saved.Category.Id) ?? JournalCategory.Ordinary
+            : JournalCategory.Ordinary;
+        OpenJournalInput(ball, draft?.Text ?? "", selected, AddJournalEntry, isEdit: false);
+    }
+
+    internal StatusBallInputWindow ShowJournalEditor(FrameworkElement row, JournalEntry entry)
+    {
+        inputWindow?.Close();
+        return OpenJournalInput(row, entry.Text, entry.RecordCategory,
+            (text, category) => EditJournalEntry(entry, text, category), isEdit: true);
+    }
+
+    private StatusBallInputWindow OpenJournalInput(FrameworkElement anchor, string text, JournalCategory selected,
+        Func<string, JournalCategory, string?> save, bool isEdit)
+    {
+        var input = new StatusBallInputWindow(anchor, text, JournalCategories, selected, save, isEdit);
+        inputWindow = input;
+        input.Closed += (_, _) =>
+        {
+            if (!isEdit && !input.WasSaved && input.UnsubmittedText.Length > 0)
+            {
+                RememberDraft(input.UnsubmittedText, input.SelectedCategory);
+            }
+
+            if (inputWindow == input)
+            {
+                inputWindow = null;
+            }
+        };
+        input.Show();
+        return input;
+    }
+
+    private void RememberDraft(string text, JournalCategory category)
+    {
+        journalDraft = (text, category);
+        draftSavedAt = Stopwatch.GetTimestamp();
+        if (draftTimer is null)
+        {
+            draftTimer = new DispatcherTimer { Interval = DraftLifetime };
+            draftTimer.Tick += (_, _) => ClearDraft();
+        }
+
+        draftTimer.Stop();
+        draftTimer.Start();
+    }
+
+    private void ClearDraft()
+    {
+        draftTimer?.Stop();
+        journalDraft = null;
+    }
+
+    private string? AddJournalEntry(string text, JournalCategory category)
+    {
+        var now = DateTimeOffset.Now;
+        var elapsed = ElapsedMinutes(now);
+        var appearance = StatusBallAppearance.Current;
+        var color = StatusBallTimeline.Resolve(appearance.ColorHex, colorRules, elapsed);
+        var entry = new JournalEntry(Guid.NewGuid(), text, now, $"#{color.R:X2}{color.G:X2}{color.B:X2}",
+            (long)Math.Max(0, (now - startedAt).TotalSeconds), category);
+        JournalData data;
+        try
+        {
+            data = journal.Add(entry);
+        }
+        catch (InvalidOperationException error)
+        {
+            return error.Message;
+        }
+        catch (Exception error) when (IsJournalStorageError(error))
+        {
+            return "未能保存记录，请重试。";
+        }
+
+        ClearDraft();
+        startedAt = now;
+        ResetReminderState(now);
+        UpdateColorTimeline(now);
+        PublishJournal(data);
+        return null;
+    }
+
+    private string? EditJournalEntry(JournalEntry original, string text, JournalCategory category)
+    {
+        JournalData data;
+        try
+        {
+            data = journal.Edit(original, text, category);
+        }
+        catch (InvalidOperationException error)
+        {
+            return error.Message;
+        }
+        catch (Exception error) when (IsJournalStorageError(error))
+        {
+            return "未能保存修改，请重试。";
+        }
+
+        var main = (MainWindow)MainWindow;
+        // Close the editor before replacing the row that owns its anchor.
+        main.Dispatcher.BeginInvoke(DispatcherPriority.Normal,
+            () => PublishJournal(data, data.Entries.First(entry => entry.Id == original.Id)));
+        return null;
+    }
+
+    internal string? ChangeJournalCategories(Func<JournalStore, JournalData> change)
+    {
+        try
+        {
+            PublishJournal(change(journal));
+            return null;
+        }
+        catch (InvalidOperationException error)
+        {
+            return error.Message;
+        }
+        catch (Exception error) when (IsJournalStorageError(error))
+        {
+            return "未能保存分类，请重试。";
+        }
+    }
+
+    private void PublishJournal(JournalData data, JournalEntry? edited = null)
+    {
+        JournalCategories = data.Categories;
+        ((MainWindow)MainWindow).ShowJournal(data.Entries, edited);
+    }
+
+    internal void CheckAutomaticBackup()
+    {
+        if (exiting)
+        {
+            return;
+        }
+
+        Backups.CheckAutomatic(DateTimeOffset.Now);
+        if (MainWindow is MainWindow main)
+        {
+            foreach (var window in main.OwnedWindows.OfType<SettingsWindow>())
+            {
+                window.RefreshBackupStatus();
+            }
+        }
+    }
+
+    internal RestoreResult RestoreBackup(FullBackup backup, RestoreScope scope)
+    {
+        var result = Backups.Restore(backup, scope);
+        var main = (MainWindow)MainWindow;
+        if (result.Journal is { } data)
+        {
+            inputWindow?.Close();
+            foreach (var editor in main.OwnedWindows.OfType<JournalCategoriesWindow>().ToArray())
+            {
+                editor.Close();
+            }
+            PublishJournal(data);
+        }
+
+        if (result.Settings is { } settings)
+        {
+            foreach (var editor in main.OwnedWindows.OfType<StatusBallSettingsWindow>().ToArray())
+            {
+                editor.Close();
+            }
+            StatusBallAppearance.Current.ApplyRestoredAppearance(settings.Diameter, settings.ColorHex, settings.InitialTitle);
+            ReloadColorTimeline();
+            floatingWindow?.ApplyRestoredPosition();
+            ApplyFullscreenSetting(settings.HideWhenFullscreen);
+            foreach (var window in main.OwnedWindows.OfType<SettingsWindow>().ToArray())
+            {
+                window.RefreshSettings();
+            }
+        }
+
+        return result;
+    }
+
+    private static bool IsJournalStorageError(Exception error) =>
+        error is IOException or UnauthorizedAccessException or SecurityException or JsonException;
+
+    internal void ReloadColorTimeline()
+    {
+        colorRules = StatusBallTimeline.Load();
+        var now = DateTimeOffset.UtcNow;
+        ResetReminderState(now);
+        UpdateColorTimeline(now);
+    }
+
+    private void ResetReminderState(DateTimeOffset now)
+    {
+        pendingReminder = null;
+        lastReminderMinute = (long)ElapsedMinutes(now);
+        lastTimelineTick = now;
+    }
+
+    private double ElapsedMinutes(DateTimeOffset now) => Math.Max(0, (now - startedAt).TotalMinutes);
+
+    private void UpdateColorTimeline(DateTimeOffset now)
+    {
+        var elapsed = ElapsedMinutes(now);
+        var minute = (long)elapsed;
+        var main = (MainWindow)MainWindow;
+        main.UpdateElapsedTime(minute);
+        main.UpdateJournalDate(now.ToLocalTime());
+        var appearance = StatusBallAppearance.Current;
+        appearance.ShowTimelineColor(StatusBallTimeline.Resolve(appearance.ColorHex, colorRules, elapsed));
+
+        if (pendingReminder is { } pending && (elapsed < pending.Start || elapsed >= pending.End))
+        {
+            pendingReminder = null;
+        }
+
+        var tickGap = now - lastTimelineTick;
+        lastTimelineTick = now;
+        if (minute <= lastReminderMinute)
+        {
+            return;
+        }
+
+        var crossedOneMinute = minute == lastReminderMinute + 1;
+        lastReminderMinute = minute;
+        if (!crossedOneMinute || tickGap <= TimeSpan.Zero || tickGap > TimeSpan.FromSeconds(5)
+            || StatusBallTimeline.ReminderSegment(colorRules, minute) is not { } segment)
+        {
+            return;
+        }
+
+        if (floatingWindow is { } window)
+        {
+            RefreshFloatingVisibility();
+            if (window.IsVisible)
+            {
+                window.PlayLocationCue();
+            }
+            else if (elapsed < segment.End)
+            {
+                pendingReminder = segment;
+            }
+        }
+        else if (main.IsVisible && main.WindowState != WindowState.Minimized)
+        {
+            main.PlayLocationCue();
+        }
+    }
+
+    internal void ToggleFloatingWindow()
+    {
+        if (floatingWindow is null)
+        {
+            ShowFloatingWindow();
+            return;
+        }
+
+        floatingWindow.Close();
+    }
+
+    private void ShowFloatingWindow()
+    {
+        var main = (MainWindow)MainWindow;
+        floatingWindow = new FloatingStatusWindow(main);
+        floatingWindow.Closed += (_, _) =>
+        {
+            fullscreenTimer?.Stop();
+            floatingWindow = null;
+            pendingReminder = null;
+            main.UpdateFloatingStatus(opened: false, visible: false);
+        };
+        RefreshFloatingVisibility(playCue: true);
+        UpdateFullscreenTimer();
+    }
+
+    internal void ApplyFullscreenSetting(bool enabled)
+    {
+        hideWhenFullscreen = enabled;
+        if (!enabled)
+        {
+            pendingReminder = null;
+        }
+        RefreshFloatingVisibility();
+        UpdateFullscreenTimer();
+    }
+
+    private void UpdateFullscreenTimer()
+    {
+        if (!hideWhenFullscreen || floatingWindow is null)
+        {
+            fullscreenTimer?.Stop();
+            return;
+        }
+
+        if (fullscreenTimer is null)
+        {
+            fullscreenTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            fullscreenTimer.Tick += (_, _) => RefreshFloatingVisibility();
+        }
+
+        fullscreenTimer.Start();
+    }
+
+    private void RefreshFloatingVisibility(bool playCue = false)
+    {
+        if (exiting || floatingWindow is not { } window)
+        {
+            return;
+        }
+
+        var hidden = hideWhenFullscreen && FullscreenDetector.IsFullscreenOn(window.CurrentScreen);
+        if (hidden && window.IsVisible)
+        {
+            window.HideForFullscreen();
+        }
+        else if (!hidden && !window.IsVisible)
+        {
+            window.Show();
+            var elapsed = ElapsedMinutes(DateTimeOffset.UtcNow);
+            var deferred = pendingReminder is { } pending && elapsed >= pending.Start && elapsed < pending.End;
+            pendingReminder = null;
+            if (playCue || deferred)
+            {
+                window.PlayLocationCue();
+            }
+        }
+
+        ((MainWindow)MainWindow).UpdateFloatingStatus(opened: true, visible: window.IsVisible);
+    }
+
+    private void ShowMainWindow()
+    {
+        if (!MainWindow.IsVisible)
+        {
+            MainWindow.Show();
+        }
+
+        if (MainWindow.WindowState == WindowState.Minimized)
+        {
+            MainWindow.WindowState = WindowState.Normal;
+        }
+
+        MainWindow.Activate();
+    }
+
+    private void HideMainWindow(object? sender, CancelEventArgs e)
+    {
+        if (exiting)
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        var window = (MainWindow)MainWindow;
+        window.CloseAuxiliaryWindows();
+        window.Hide();
+    }
+
+    protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        base.OnSessionEnding(e);
+        exiting = !e.Cancel;
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        fullscreenTimer?.Stop();
+        timelineTimer?.Stop();
+        backupTimer?.Stop();
+        ClearDraft();
+        trayIcon?.Dispose();
+        trayArtwork?.Dispose();
+        trayMenu?.Dispose();
+        restoreListener?.Unregister(null);
+        restoreRequest?.Dispose();
+        if (ownsInstance)
+        {
+            instanceMutex?.ReleaseMutex();
+        }
+
+        instanceMutex?.Dispose();
+        base.OnExit(e);
+    }
+}

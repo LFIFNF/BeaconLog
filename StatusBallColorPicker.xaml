@@ -1,0 +1,24 @@
+<UserControl x:Class="BeaconLog.StatusBallColorPicker"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <StackPanel>
+        <WrapPanel KeyboardNavigation.TabNavigation="Continue">
+            <WrapPanel.Resources>
+                <Style TargetType="Button">
+                    <Setter Property="Margin" Value="0,0,6,6" />
+                    <Setter Property="Padding" Value="8,4" />
+                    <Setter Property="Background" Value="{Binding Tag, RelativeSource={RelativeSource Self}}" />
+                    <EventSetter Event="Click" Handler="Palette_Click" />
+                </Style>
+            </WrapPanel.Resources>
+            <Button Content="青色" Tag="#08A9C1" />
+            <Button Content="蓝色" Tag="#3B82F6" />
+            <Button Content="绿色" Tag="#22C55E" />
+            <Button Content="橙色" Tag="#F59E0B" />
+            <Button Content="红色" Tag="#EF4444" />
+            <Button Content="紫色" Tag="#A78BFA" />
+        </WrapPanel>
+        <TextBox x:Name="HexInput" AutomationProperties.Name="十六进制颜色"
+                 Width="120" HorizontalAlignment="Left" Padding="7,4" />
+    </StackPanel>
+</UserControl>
